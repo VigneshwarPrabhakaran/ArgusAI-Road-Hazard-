@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pothole Hazard Map</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+
+        #layout {
+            display: flex;
+            height: 100vh;
+        }
+
+        #sidebar {
+            width: 350px;
+            background: #f8f9fa;
+            border-right: 1px solid #ddd;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 2px 0 5px rgba(0, 0, 0, 0.1);
+            z-index: 1000;
+        }
+
+        #map {
+            flex-grow: 1;
+            height: 100%;
+        }
+
+        h1 {
+            color: #d9534f;
+            margin-top: 0;
+            font-size: 24px;
+        }
+
+        .subtitle {
+            color: #666;
+            font-size: 14px;
+            margin-bottom: 20px;
+        }
+
+        .hazard-card {
+            background: white;
+            border-left: 5px solid #d9534f;
+            padding: 15px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            border-radius: 4px;
+            transition: transform 0.2s;
+        }
+
+        .hazard-card:hover {
+            transform: translateX(5px);
+        }
+
+        .hazard-time {
+            font-size: 12px;
+            color: #888;
+            margin-bottom: 5px;
+        }
+
+        .hazard-conf {
+            font-weight: bold;
+            color: #333;
+        }
+
+        .hazard-dist {
+            color: #d9534f;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+
+        /* Alert Box */
+        #alert-box {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #d9534f;
+            color: white;
+            padding: 15px 25px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            z-index: 2000;
+            display: none;
+            animation: slideIn 0.5s ease-out;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+
+        .status-dot {
+            height: 10px;
+            width: 10px;
+            background-color: #5cb85c;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 5px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div id="alert-box">
+        <strong>⚠️ HAZARD DETECTED!</strong><br>
+        <span id="alert-msg">Pothole ahead!</span>
+    </div>
+
+    <div id="layout">
+        <div id="sidebar">
+            <h1>🚧 Hazard Tracker</h1>
+            <div class="subtitle"><span class="status-dot"></span>System Active</div>
+
+            <div id="stats">
+                <p><strong>Detected Hazards:</strong> <span id="count">0</span></p>
+            </div>
+
+            <h3>Recent Alerts</h3>
+            <div id="hazard-list">
+                <!-- Hazards will be injected here -->
+            </div>
+        </div>
+        <div id="map"></div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+        integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-app.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-analytics.js";
+        import { getFirestore, collection, onSnapshot, query, orderBy, limit } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
+
+        // Firebase Configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyBZ9YfokDJDzrQTmy0KmPe08aR_Gg7pshY",
+            authDomain: "pothole-detector-3f442.firebaseapp.com",
+            projectId: "pothole-detector-3f442",
+            storageBucket: "pothole-detector-3f442.firebasestorage.app",
+            messagingSenderId: "375170973261",
+            appId: "1:375170973261:web:f64d9e845e7e85e721a604",
+            measurementId: "G-TML7YQR18Y"
+        };
+
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const analytics = getAnalytics(app);
+        const db = getFirestore(app);
+
+        // --- HARDCODED DEMO LOCATION (Tambaram, Chennai) ---
+        let userLat = 12.9229;
+        let userLon = 80.1275;
+
+        // Init Map Centered on User
+        const map = L.map('map').setView([userLat, userLon], 16);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+        }).addTo(map);
+
+        const markers = {};
+
+        // Add User Marker (Blue Dot)
+        const userMarker = L.marker([userLat, userLon], {
+            icon: L.divIcon({
+                className: 'user-icon',
+                html: '<div style="background:blue;width:12px;height:12px;border-radius:50%;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.5);"></div>'
+            })
+        }).addTo(map).bindPopup("You are here (Tambaram)");
+
+        // Helper to calc distance (Haversine)
+        function getDistanceFromLatLonInMeters(lat1, lon1, lat2, lon2) {
+            var R = 6371; // Radius of the earth in km
+            var dLat = deg2rad(lat2 - lat1);
+            var dLon = deg2rad(lon2 - lon1);
+            var a =
+                Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(deg2rad(lat1)) * Math.cos(deg2rad(lat2)) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            var d = R * c; // Distance in km
+            return d * 1000; // meters
+        }
+
+        function deg2rad(deg) {
+            return deg * (Math.PI / 180)
+        }
+
+        // Listen for realtime updates from Firestore
+        const q = query(collection(db, "hazards"), orderBy("timestamp", "desc"), limit(50));
+
+        onSnapshot(q, (snapshot) => {
+            const hazards = [];
+            snapshot.forEach((doc) => {
+                hazards.push({ id: doc.id, ...doc.data() });
+            });
+
+            updateUI(hazards);
+        });
+
+        function updateUI(hazards) {
+            document.getElementById('count').innerText = hazards.length;
+            const listContainer = document.getElementById('hazard-list');
+
+            // Clear current list logic might need refinement for smooth updates, 
+            // but for prototype rebuilding is fine.
+            listContainer.innerHTML = '';
+
+            let closestDist = Infinity;
+
+            // 1. Filter Hazards (Prevent Clustering)
+            // We sort hazards by confidence (descending) so we keep the "best" detection in a cluster.
+            // Or prioritize newest? User said "another geo-tag should be marked only if it's 100m away", 
+            // implying strict distance constraint.
+            // Let's iterate and keep a list of "accepted" hazards.
+
+            const acceptedHazards = [];
+            const MIN_DIST_METERS = 100;
+
+            hazards.forEach(candidate => {
+                let tooClose = false;
+                for (const existing of acceptedHazards) {
+                    const d = getDistanceFromLatLonInMeters(
+                        candidate.latitude, candidate.longitude,
+                        existing.latitude, existing.longitude
+                    );
+                    if (d < MIN_DIST_METERS) {
+                        tooClose = true;
+                        break;
+                    }
+                }
+
+                if (!tooClose) {
+                    acceptedHazards.push(candidate);
+                }
+            });
+
+            // Update Map Markers
+            acceptedHazards.forEach(h => {
+                if (!markers[h.id]) {
+                    const marker = L.marker([h.latitude, h.longitude]).addTo(map);
+
+                    let popupContent = `<b>Hazard Detected</b><br>Confidence: ${(h.confidence * 100).toFixed(0)}%`;
+
+                    let imgSource = null;
+                    if (h.image_url) imgSource = h.image_url;
+                    else if (h.image_base64) imgSource = h.image_base64;
+
+                    if (imgSource) {
+                        popupContent += `<br><img src="${imgSource}" width="150" style="margin-top:5px;border-radius:4px;">`;
+                    } else {
+                        popupContent += `<br><i>No image available</i>`;
+                    }
+
+                    marker.bindPopup(popupContent);
+
+                    // Show on Hover
+                    marker.on('mouseover', function (e) {
+                        this.openPopup();
+                    });
+                    marker.on('mouseout', function (e) {
+                        this.closePopup();
+                    });
+
+                    markers[h.id] = marker;
+                }
+            });
+
+            // Remove old markers not in accepted list (Optional but good for cleanliness)
+            // Ideally we should sync markers with acceptedHazards but for prototype valid.
+
+            // Update Sidebar List (Show all or filtered? Usually filtered to match map)
+            acceptedHazards.forEach(h => {
+                const distKey = `${h.id}_dist`; // avoiding duplicate append in this simple loop
+                // ... Simplification: Just clearing and rebuilding list is safer for this prototype structure
+            });
+
+            // Re-render sidebar entirely based on accepted hazards
+            acceptedHazards.forEach(h => {
+                const dist = getDistanceFromLatLonInMeters(userLat, userLon, h.latitude, h.longitude);
+                if (dist < closestDist) closestDist = dist;
+
+                const item = document.createElement('div');
+                item.className = 'hazard-card';
+                // Timestamp conversion
+                const timeMs = h.timestamp * 1000;
+                item.innerHTML = `
+                    <div class="hazard-time">${new Date(timeMs).toLocaleTimeString()}</div>
+                    <div class="hazard-conf">Confidence: ${(h.confidence * 100).toFixed(0)}%</div>
+                    <div class="hazard-dist">${dist.toFixed(1)}m away</div>
+                `;
+                listContainer.appendChild(item);
+            });
+
+            // Alert Logic
+            const alertBox = document.getElementById('alert-box');
+            const alertMsg = document.getElementById('alert-msg');
+
+            if (closestDist < 100) {
+                alertBox.style.display = 'block';
+                alertMsg.innerText = `Danger! Hazard ${closestDist.toFixed(0)}m ahead!`;
+            } else {
+                alertBox.style.display = 'none';
+            }
+        }
+
+        // Simulate User Movement (Small drift in Tambaram)
+        setInterval(() => {
+            userLat += 0.00002;
+            userMarker.setLatLng([userLat, userLon]);
+        }, 1000);
+
+    </script>
+</body>
+
+</html>
