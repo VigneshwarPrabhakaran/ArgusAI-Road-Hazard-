@@ -5,9 +5,18 @@ import random
 import math
 import datetime
 import firebase_admin
+import threading
 from firebase_admin import credentials, firestore, storage
 from ultralytics import YOLO
 import base64
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+app = Flask(__name__)
+CORS(app) # This allows your Netlify frontend to talk to this backend
+
+@app.route('/')
+def health_check():
+    return "Argus AI Backend is Running!"
 
 
 # --- Configuration ---
@@ -294,8 +303,11 @@ def main():
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
-    # Get the PORT from Render, or use 5000 if running locally
+    # 1. Start the Detection/Simulation logic in a separate thread
+    print("Starting background simulation thread...")
+    threading.Thread(target=main, daemon=True).start()
+
+    # 2. Start the Flask Server (This keeps Render happy by listening on the port)
     port = int(os.environ.get("PORT", 5000))
-    
-    # host='0.0.0.0' is CRITICAL for cloud deployment
+    print(f"Starting Flask server on port {port}...")
     app.run(host='0.0.0.0', port=port)
