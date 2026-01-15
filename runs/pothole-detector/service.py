@@ -293,5 +293,9 @@ def main():
         cap.release()
     cv2.destroyAllWindows()
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    # Get the PORT from Render, or use 5000 if running locally
+    port = int(os.environ.get("PORT", 5000))
+    
+    # host='0.0.0.0' is CRITICAL for cloud deployment
+    app.run(host='0.0.0.0', port=port)
