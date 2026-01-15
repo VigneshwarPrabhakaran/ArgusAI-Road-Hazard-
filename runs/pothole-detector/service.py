@@ -228,7 +228,7 @@ def main():
             frame = next(image_cycler)
             frame = frame.copy() # Ensure we don't modify the original cached image
             ret = True
-            time.sleep(300) # Simulate ~10 FPS to not flood logs
+            time.sleep(5) # Simulate ~10 FPS to not flood logs
         else:
             ret, frame = cap.read()
             if not ret:
