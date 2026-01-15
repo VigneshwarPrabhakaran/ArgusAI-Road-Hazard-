@@ -119,10 +119,33 @@
             display: inline-block;
             margin-right: 5px;
         }
+
+        /* Cloud Simulation Banner */
+        #cloud-banner {
+            position: fixed;
+            top: 0;
+            left: 350px;
+            /* Sidebar width */
+            right: 0;
+            background: #ff9800;
+            /* Orange/Warning color */
+            color: white;
+            text-align: center;
+            padding: 10px;
+            font-weight: bold;
+            z-index: 3000;
+            display: none;
+            /* Hidden by default */
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
     </style>
 </head>
 
 <body>
+
+    <div id="cloud-banner">
+        ⚠️ Running on Netlify/Cloud, cannot access webcam, using sample images for simulation...
+    </div>
 
     <div id="alert-box">
         <strong>⚠️ HAZARD DETECTED!</strong><br>
@@ -223,6 +246,17 @@
         });
 
         function updateUI(hazards) {
+            // Check for Simulation Flag in the LATEST hazard only
+            // This prevents old "Cloud" hazards from keeping the banner open when running locally now.
+            const isSimulated = hazards.length > 0 && hazards[0].is_simulated === true;
+
+            const cloudBanner = document.getElementById('cloud-banner');
+            if (isSimulated) {
+                cloudBanner.style.display = 'block';
+            } else {
+                cloudBanner.style.display = 'none';
+            }
+
             document.getElementById('count').innerText = hazards.length;
             const listContainer = document.getElementById('hazard-list');
 

@@ -86,7 +86,7 @@ def encode_image_base64(image_path):
         print(f"Error encoding image base64: {e}")
         return None
 
-def report_hazard(lat, lon, confidence, image_filename, local_image_path):
+def report_hazard(lat, lon, confidence, image_filename, local_image_path, is_simulated=False):
     """Writes hazard data to Firestore."""
     
     # 1. Upload Image (Optional)
@@ -109,13 +109,28 @@ def report_hazard(lat, lon, confidence, image_filename, local_image_path):
         'image_url': image_url, # Store URL if available
         'image_base64': image_base64, # Store Base64 if URL failed
         'timestamp': timestamp,
-        'created_at': firestore.SERVER_TIMESTAMP
+        'created_at': firestore.SERVER_TIMESTAMP,
+        'is_simulated': is_simulated  # Flag to trigger frontend warning
     }
     
     doc_ref.set(data)
-    print(f" [REPORTED] Hazard logged to Firestore ID: {doc_ref.id} | Conf: {confidence:.2f}")
+    print(f" [REPORTED] Hazard logged to Firestore ID: {doc_ref.id} | Conf: {confidence:.2f} | Sim: {is_simulated}")
 
 def main():
+    # --- cloud simulation setup ---
+    import os
+    import sys
+    import itertools
+    import numpy as np
+
+    # 1. ROBUST ENVIRONMENT CHECK
+    # Check for 'RENDER' and other keys Render sets automatically
+    IS_RENDER = (
+        os.environ.get('RENDER') is not None or 
+        os.environ.get('RENDER_SERVICE_ID') is not None or
+        os.environ.get('RENDER_SERVICE_NAME') is not None
+    )
+
     # Load model
     # Prioritize the custom trained model 'pothole_best.pt'
     MODEL_NAME = "pothole_best.pt" 
@@ -129,12 +144,66 @@ def main():
         # If falling back to standard model, we must warn user it might detect generic objects
         print(" [WARN] Using generic model. Detections might not be accurate potholes.")
 
-    # Initialize Webcam (0)
-    source = 0 
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
-        print("Error: Could not open video source.")
-        return
+    # Initialize Video Source
+    cap = None
+    image_cycler = None
+    
+    # 2. HARDWARE FAILSAFE CHECK
+    # If not explicitly on Render, try to open Webcam.
+    if not IS_RENDER:
+        print("System seemingly local. Attempting to access Webcam(0)...")
+        try:
+            # Squelch stderr for cleaner logs if it fails
+            if os.name == 'posix': # Linux/Mac (Render is Linux)
+                pass 
+            cap = cv2.VideoCapture(0)
+            if not cap.isOpened():
+                print(" [WARN] Webcam(0) failed to open! Environment is likely Headless/Cloud.")
+                print(" [INFO] Activating Failsafe: Switching to CLOUD SIMULATION MODE.")
+                IS_RENDER = True # Force simulation
+                cap = None # Ensure cap is cleared
+        except Exception as e:
+            print(f" [WARN] Webcam access error: {e}")
+            print(" [INFO] Activating Failsafe: Switching to CLOUD SIMULATION MODE.")
+            IS_RENDER = True
+
+    # 3. CONFIGURE SIMULATION (If Explicitly Render OR Failsafe Triggered)
+    if IS_RENDER:
+        print("\n" + "!"*60)
+        print("WARN: Running on Netlify/Render Cloud Platform (or Webcam failed).")
+        print("WARN: Cannot access webcam!")
+        print("WARN: Using sample images (download.webp, OIP.webp) for simulation.")
+        print("!"*60 + "\n")
+
+        # Load sample images from project root (../../)
+        # Service.py is in runs/pothole-detector/
+        
+        # We need to find the project root. 
+        # current file is in <root>/runs/pothole-detector/service.py
+        base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        
+        img_paths = [
+            os.path.join(base_dir, "download.webp"),
+            os.path.join(base_dir, "OIP.webp") 
+        ]
+        
+        loaded_images = []
+        for p in img_paths:
+            if os.path.exists(p):
+                img = cv2.imread(p)
+                if img is not None:
+                    loaded_images.append(img)
+                else:
+                    print(f" [ERR] Failed to load image: {p}")
+            else:
+                print(f" [ERR] Image not found: {p}")
+        
+        if not loaded_images:
+            print(" [FATAL] No sample images found for Cloud Simulation. Exiting.")
+            return
+
+        print(f" [INFO] Loaded {len(loaded_images)} sample images for simulation.")
+        image_cycler = itertools.cycle(loaded_images)
 
     print("Starting detection loop. Press 'q' to quit.")
     
@@ -145,9 +214,16 @@ def main():
     REPORT_COOLDOWN_TIME = 2.0 
 
     while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+        if IS_RENDER:
+            # Simulate frame reading from images
+            frame = next(image_cycler)
+            frame = frame.copy() # Ensure we don't modify the original cached image
+            ret = True
+            time.sleep(0.1) # Simulate ~10 FPS to not flood logs
+        else:
+            ret, frame = cap.read()
+            if not ret:
+                break
 
         # Run inference
         results = model(frame, verbose=False)
@@ -165,8 +241,9 @@ def main():
                 detected = True
                 max_conf = max(max_conf, conf)
 
-        # Show feed
-        cv2.imshow("Pothole Detection (Chennai Prototype)", annotated_frame)
+        # Show feed ONLY if NOT on Render
+        if not IS_RENDER:
+            cv2.imshow("Pothole Detection (Chennai Prototype)", annotated_frame)
 
         # Logic to Report
         current_time = time.time()
@@ -196,17 +273,24 @@ def main():
                 cv2.imwrite(local_filepath, annotated_frame)
                 
                 # Report to Firebase
-                report_hazard(lat, lon, max_conf, filename, local_filepath)
+                report_hazard(lat, lon, max_conf, filename, local_filepath, is_simulated=IS_RENDER)
                 
                 # Update last reported location
                 last_reported_lat = lat
                 last_reported_lon = lon
                 last_report_time = current_time
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        if not IS_RENDER:
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+        else:
+            # On render, we just loop forever (or until killed)
+            # Maybe yield a log every now and then to show it's alive
+            if int(current_time) % 10 == 0:
+                 pass # Keep logs clean, report_hazard already prints
 
-    cap.release()
+    if cap:
+        cap.release()
     cv2.destroyAllWindows()
 
 if __name__ == "__main__":
